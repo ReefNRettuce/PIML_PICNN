@@ -26,8 +26,8 @@ class decoder_double_convolution(nn.Module):
                   stride=1,
                   padding=1,
                   bias=False),
+            nn.BatchNorm2d(out_channels),
             nn.LeakyReLU(negative_slope=0.2,inplace=False),
-            nn.BatchNorm2d(out_channels)
         )
     def forward(self, x):
         return self.convolution_operation(x)
@@ -113,21 +113,108 @@ class partial_convolutions(nn.Module):
 
 
 class tiny_unet(nn.Module):
-    def __init__(self, x):
+    def __init__(self, in_channels=2, out_channels=1):
         super().__init__()
         
+        # Initial convolution to go from input channels to first encoder channels
+        self.initial_conv = nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=16,
+            kernel_size=3,
+            padding=1)
+        
+        # Encoder (stays the same - these look correct)
+        self.encoder_1 = partial_convolutions(
+            in_channels=16, out_channels=32,
+            kernel_size=5, stride=2, padding=2, negative_slope=0.2)
+        
+        self.encoder_2 = partial_convolutions(
+            in_channels=32, out_channels=64,
+            kernel_size=3, stride=2, padding=1, negative_slope=0.2)
+        
+        self.encoder_3 = partial_convolutions(
+            in_channels=64, out_channels=128,
+            kernel_size=3, stride=2, padding=1, negative_slope=0.2)
+        
+        self.encoder_4 = partial_convolutions(
+            in_channels=128, out_channels=256,
+            kernel_size=3, stride=2, padding=1, negative_slope=0.2)
+        
+        self.bottle_neck = partial_convolutions(
+            in_channels=256, out_channels=512,
+            kernel_size=3, stride=2, padding=1, negative_slope=0.2)
+        
+        # Decoder - FIXED CHANNEL COUNTS
+        # Block 1: 512 → 256, concat x_4 (256) → 512 total
+        self.up_transpose_1 = nn.ConvTranspose2d(
+            in_channels=512,      # From bottleneck
+            out_channels=256,
+            kernel_size=2, stride=2)
+        self.decoder_1 = decoder_double_convolution(
+            in_channels=512,      # 256 + 256 from skip
+            out_channels=256)
+        
+        # Block 2: 256 → 128, concat x_3 (128) → 256 total
+        self.up_transpose_2 = nn.ConvTranspose2d(
+            in_channels=256,      # From decoder_1
+            out_channels=128,
+            kernel_size=2, stride=2)
+        self.decoder_2 = decoder_double_convolution(
+            in_channels=256,      # 128 + 128 from skip
+            out_channels=128)
+        
+        # Block 3: 128 → 64, concat x_2 (64) → 128 total
+        self.up_transpose_3 = nn.ConvTranspose2d(
+            in_channels=128,      # From decoder_2
+            out_channels=64,
+            kernel_size=2, stride=2)
+        self.decoder_3 = decoder_double_convolution(
+            in_channels=128,      # 64 + 64 from skip
+            out_channels=64)
+        
+        # Block 4: 64 → 32, concat x_1 (32) → 64 total
+        self.up_transpose_4 = nn.ConvTranspose2d(
+            in_channels=64,       # From decoder_3
+            out_channels=32,
+            kernel_size=2, stride=2)
+        self.decoder_4 = decoder_double_convolution(
+            in_channels=64,       # 32 + 32 from skip
+            out_channels=32)
+        
+        # Final output layer
+        self.decoder_output = decoder_final_layer_convolution(
+            in_channels=32, 
+            out_channels=out_channels)  # Use constructor parameter!
 
+    def forward(self, x, mask):
+        # Initial convolution
+        x = self.initial_conv(x)
+        
+        # Encoder
+        x_1, m_1 = self.encoder_1(x, mask)
+        x_2, m_2 = self.encoder_2(x_1, m_1)
+        x_3, m_3 = self.encoder_3(x_2, m_2)
+        x_4, m_4 = self.encoder_4(x_3, m_3)
+        x_btt_nck, m_btt_nck = self.bottle_neck(x_4, m_4)
+        
+        # Decoder
+        x = self.up_transpose_1(x_btt_nck)
+        x = torch.cat([x, x_4], dim=1)  # 256 + 256 = 512
+        x = self.decoder_1(x)            # 512 → 256
+        
+        x = self.up_transpose_2(x)
+        x = torch.cat([x, x_3], dim=1)  # 128 + 128 = 256
+        x = self.decoder_2(x)            # 256 → 128
+        
+        x = self.up_transpose_3(x)
+        x = torch.cat([x, x_2], dim=1)  # 64 + 64 = 128
+        x = self.decoder_3(x)            # 128 → 64
+        
+        x = self.up_transpose_4(x)
+        x = torch.cat([x, x_1], dim=1)  # 32 + 32 = 64
+        x = self.decoder_4(x)            # 64 → 32
+        
+        x = self.decoder_output(x)       # 32 → out_channels
+        
+        return x
 
-    def forward(self,x):
-        pass
-
-def training():
-    pass
-
-# put dataloader here
-
-# put training loop 
-
-# def PDE here 
-
-# def something something here I don't know what I'm doing. 
